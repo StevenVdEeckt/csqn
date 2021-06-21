@@ -10,10 +10,11 @@ import urllib.request
 from PIL import Image
 import pickle
 from torchvision.datasets.mnist import *
-
-
 logger = logging.getLogger('main')
 
+"""
+    Module to generate the tasks for the different experiments
+"""
 
 
 """
@@ -23,23 +24,26 @@ logger = logging.getLogger('main')
     :param int batch_size: the batch_size
     ::param bool return_joint: (optional) if True, a dataloader for the joint dataset is also returned
 """
-
-
 def get_rotated_mnist_data(n_tasks, angle, batch_size, return_joint=False):
     logger.debug("Rotated MNIST dataset with: angle = %d, n_tasks = %d, batch_size = %d" % (angle, n_tasks, batch_size))
     rot_transforms = {i: transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)),
-                                             transforms.RandomRotation([angle * i, angle * i])]) for i in range(n_tasks)}
+                                             transforms.RandomRotation([angle * i, angle * i])])
+                      for i in range(n_tasks)}
 
-    dataset = {i: torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=rot_transforms[i]) for i in range(n_tasks)}
-    testset = {i: torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=rot_transforms[i]) for i in range(n_tasks)}
+    dataset = {i: torchvision.datasets.MNIST(root='./data', train=True, download=True,
+                                             transform=rot_transforms[i]) for i in range(n_tasks)}
+    testset = {i: torchvision.datasets.MNIST(root='./data', train=False, download=True,
+                                             transform=rot_transforms[i]) for i in range(n_tasks)}
 
     # Split test in dev and test:
     trainset, devset = {}, {}
     for n, p in dataset.items():
-        trainset[n], devset[n] = torch.utils.data.random_split(p, [55000, 5000], generator=torch.Generator().manual_seed(42))
+        trainset[n], devset[n] = torch.utils.data.random_split(p, [55000, 5000],
+                                                               generator=torch.Generator().manual_seed(42))
 
     joint_trainset = torch.utils.data.ConcatDataset([trainset[i] for i in trainset.keys()])
-    train_data = lambda t_: torch.utils.data.DataLoader(trainset[t_], batch_size=batch_size, shuffle=True, num_workers=0)
+    train_data = lambda t_: torch.utils.data.DataLoader(trainset[t_], batch_size=batch_size,
+                                                        shuffle=True, num_workers=0)
     test_data = lambda t_: torch.utils.data.DataLoader(testset[t_], batch_size=batch_size, shuffle=False, num_workers=0)
     dev_data = lambda t_: torch.utils.data.DataLoader(devset[t_], batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -54,13 +58,11 @@ def get_rotated_mnist_data(n_tasks, angle, batch_size, return_joint=False):
     :param int n_tasks: the number of tasks to create
     :param int batch_size: the batch_size
 """
-
-
 def get_split_mnist_data(n_tasks, batch_size):
     logger.debug("Split MNIST dataset with: n_tasks = %d, batch_size = %d" % (n_tasks, batch_size))
     n_classes = 10 // n_tasks
     classes_per_task = {i: [i * n_classes + j for j in range(n_classes)] for i in range(n_tasks)}
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize( (0.1307,), (0.3081,))])
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
 
     def get_indices(data, class_names, datas=None):
         indices, temp = [], []
@@ -94,13 +96,19 @@ def get_split_mnist_data(n_tasks, batch_size):
         logger.debug('Task %d consists of: %s' % (i, str(get_classes(i))))
 
     # Split test in dev and test:
-    trainset, devset = torch.utils.data.random_split(dataset, [55000, 5000], generator=torch.Generator().manual_seed(42))
+    trainset, devset = torch.utils.data.random_split(dataset, [55000, 5000],
+                                                     generator=torch.Generator().manual_seed(42))
     train_data = lambda t_: torch.utils.data.DataLoader(trainset, batch_size=batch_size, num_workers=0,
-                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset, classes_per_task[t_], dataset)))
+                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset,
+                                                                                             classes_per_task[t_],
+                                                                                             dataset)))
     test_data = lambda t_: torch.utils.data.DataLoader(testset, batch_size=batch_size, num_workers=0,
-                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(testset, classes_per_task[t_])))
+                           sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(testset,
+                                                                                            classes_per_task[t_])))
     dev_data = lambda t_: torch.utils.data.DataLoader(devset, batch_size=batch_size, num_workers=0,
-                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(devset, classes_per_task[t_], dataset)))
+                          sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(devset,
+                                                                                           classes_per_task[t_],
+                                                                                           dataset)))
     return train_data, dev_data, test_data, n_classes
 
 
@@ -109,8 +117,6 @@ def get_split_mnist_data(n_tasks, batch_size):
     :param int n_tasks: the number of tasks to create
     :param int batch_size: the batch_size
 """
-
-
 def get_split_cifar100_data(n_tasks, batch_size):
     logger.debug("Split CIFAR-100 dataset with: n_tasks = %d, batch_size = %d" % (n_tasks, batch_size))
     n_classes = 100 // n_tasks
@@ -152,27 +158,34 @@ def get_split_cifar100_data(n_tasks, batch_size):
         logger.debug('Task %d consists of: %s' % (i, str(get_classes(i))))
 
     # Split test in dev and test:
-    trainset, devset = torch.utils.data.random_split(dataset, [45000, 5000], generator=torch.Generator().manual_seed(42))
+    trainset, devset = torch.utils.data.random_split(dataset, [45000, 5000],
+                                                     generator=torch.Generator().manual_seed(42))
     train_data = lambda t_: torch.utils.data.DataLoader(trainset, batch_size=batch_size, num_workers=0,
-                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset, classes_per_task[t_], dataset)))
+                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset,
+                                                                                             classes_per_task[t_],
+                                                                                             dataset)))
     test_data = lambda t_: torch.utils.data.DataLoader(testset, batch_size=batch_size, num_workers=0,
-                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(testset, classes_per_task[t_])))
+                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(testset,
+                                                                                             classes_per_task[t_])))
     dev_data = lambda t_: torch.utils.data.DataLoader(devset, batch_size=batch_size, num_workers=0,
-                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(devset, classes_per_task[t_], dataset)))
+                            sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(devset,
+                                                                                             classes_per_task[t_],
+                                                                                             dataset)))
     return train_data, dev_data, test_data, n_classes
+
 
 """
     Returns train, validation and test dataloaders for the Split CIFAR-10/100 experiments
     :param int n_tasks: the number of tasks to create for the CIFAR-100 (total tasks is thus n_tasks + 1)
     :param int batch_size: the batch_size
 """
-
 def get_split_cifar10_100_data(n_tasks, batch_size):
     logger.debug("Split CIFAR-10/100 dataset with: n_tasks = %d, batch_size = %d" % (n_tasks+1, batch_size))
     n_classes = 100 // n_tasks
     classes_per_task = {i: [i * n_classes + j for j in range(n_classes)] for i in range(n_tasks)}
 
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                                                std=[0.229, 0.224, 0.225])])
 
     def get_indices(data, class_names, datas=None):
         indices, temp = [], []
@@ -212,15 +225,19 @@ def get_split_cifar10_100_data(n_tasks, batch_size):
         logger.debug('Task %d consists of: %s' % (i, get_classes(i)))
 
     # Split test in dev and test:
-    trainset10, devset10 = torch.utils.data.random_split(dataset10, [45000, 5000], generator=torch.Generator().manual_seed(42))
-    trainset, devset = torch.utils.data.random_split(dataset, [45000, 5000], generator=torch.Generator().manual_seed(42))
+    trainset10, devset10 = torch.utils.data.random_split(dataset10, [45000, 5000],
+                                                         generator=torch.Generator().manual_seed(42))
+    trainset, devset = torch.utils.data.random_split(dataset, [45000, 5000],
+                                                     generator=torch.Generator().manual_seed(42))
 
     train_data100 = lambda t_: torch.utils.data.DataLoader(trainset, batch_size=batch_size, num_workers=0,
-                sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset, classes_per_task[t_], dataset)))
+                sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset, classes_per_task[t_],
+                                                                                 dataset)))
     test_data100 = lambda t_: torch.utils.data.DataLoader(testset, batch_size=batch_size, num_workers=0,
                 sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(testset, classes_per_task[t_])))
     dev_data100 = lambda t_: torch.utils.data.DataLoader(devset, batch_size=batch_size, num_workers=0,
-                sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(devset, classes_per_task[t_], dataset)))
+                sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(devset, classes_per_task[t_],
+                                                                                 dataset)))
     train_data10 = torch.utils.data.DataLoader(trainset10, batch_size=batch_size, num_workers=0, shuffle=True)
     test_data10 = torch.utils.data.DataLoader(testset10, batch_size=batch_size, num_workers=0, shuffle=False)
     dev_data10 = torch.utils.data.DataLoader(devset10, batch_size=batch_size, num_workers=0, shuffle=False)
@@ -232,18 +249,17 @@ def get_split_cifar10_100_data(n_tasks, batch_size):
     return train_data, dev_data, test_data, n_classes
 
 
-
 """
-    Generates a MNIST permutation dataset
+    Generates a MNIST permutation
     :param np.RandomState random_state: numpy random state object 
 """
 def generate_mnist_permutation(random_state):
-  idx_permute = torch.from_numpy(random_state.permutation(28*28))
-  transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)),
+    idx_permute = torch.from_numpy(random_state.permutation(28*28))
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)),
                                   transforms.Lambda(lambda x: x.view(-1)[idx_permute].view(1, 28, 28))])
-  dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-  testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
-  return dataset, testset
+    dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+    return dataset, testset
 
 
 """
@@ -252,7 +268,6 @@ def generate_mnist_permutation(random_state):
     :param int batch_size: the batch_size
     :param bool return_joint: (optional) joint dataset is returned if set to True
 """
-
 def get_permuted_mnist_data(n_tasks, batch_size, return_joint=False):
     logger.debug("Permuted MNIST dataset with: n_tasks = %d, batch_size = %d" % (n_tasks, batch_size))
     rng_permute = np.random.RandomState(92916)
@@ -264,11 +279,14 @@ def get_permuted_mnist_data(n_tasks, batch_size, return_joint=False):
     # Split test in dev and test:
     trainset, devset = {}, {}
     for n, p in dataset.items():
-        trainset[n], devset[n] = torch.utils.data.random_split(p, [55000, 5000], generator=torch.Generator().manual_seed(42))
+        trainset[n], devset[n] = torch.utils.data.random_split(p, [55000, 5000],
+                                                               generator=torch.Generator().manual_seed(42))
 
     joint_trainset = torch.utils.data.ConcatDataset([trainset[i] for i in trainset.keys()])
-    train_data = lambda t_: torch.utils.data.DataLoader(trainset[t_], batch_size=batch_size, shuffle=True, num_workers=0)
-    test_data = lambda t_: torch.utils.data.DataLoader(testset[t_], batch_size=batch_size, shuffle=False, num_workers=0)
+    train_data = lambda t_: torch.utils.data.DataLoader(trainset[t_], batch_size=batch_size,
+                                                        shuffle=True, num_workers=0)
+    test_data = lambda t_: torch.utils.data.DataLoader(testset[t_], batch_size=batch_size,
+                                                       shuffle=False, num_workers=0)
     dev_data = lambda t_: torch.utils.data.DataLoader(devset[t_], batch_size=batch_size, shuffle=False, num_workers=0)
 
     if not return_joint:
@@ -277,8 +295,9 @@ def get_permuted_mnist_data(n_tasks, batch_size, return_joint=False):
         return train_data, dev_data, test_data, joint_trainset
 
 
-
-
+"""
+    Class to load the notMNIST dataset in PyTorch
+"""
 class notMNIST(torchvision.datasets.MNIST):
     """`notMNIST <https://github.com/davidflanagan/notMNIST-to-MNIST>`_ Dataset.
 
@@ -300,10 +319,6 @@ class notMNIST(torchvision.datasets.MNIST):
     test_file = 'test.pt'
     classes = ['0 - A', '1 - B', '2 - C', '3 - D', '4 - E',
                '5 - F', '6 - G', '7 - H', '8 - I', '9 - J']
-
-    #def __init__(self, root, train, transform=None, target_transform=None, download=False):
-    #    super(notMNIST, self).__init__(root, train, transform=transform,
-    #                                   target_transform=target_transform, download=download)
 
     def download(self):
         """Download the MNIST data if it doesn't exist in processed_folder already."""
@@ -332,15 +347,15 @@ class notMNIST(torchvision.datasets.MNIST):
 
         print('Done!')
 
+
 """
     Returns train, validation and test dataloaders for the 'Vision Datasets' experiments
     :param int batch_size: the batch_size
     :param int Nsamples: number of samples drawn from each training set to compute FIM, Hessian etc. 
     :param bool return_joint: (optional) joint dataset is returned if set to True
 """
-
 def get_five_datasets(batch_size, Nsamples=50, return_joint=False):
-    logger.debug("Five datasets with batch_size = %d" % (batch_size))
+    logger.debug("Five datasets with batch_size = %d" % batch_size)
 
     dataset, testset = {}, {}
     tr_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)),
@@ -351,8 +366,8 @@ def get_five_datasets(batch_size, Nsamples=50, return_joint=False):
                                                                                 std=[0.229, 0.224, 0.225])])
     dataset[1] = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=tr_cifar)
     testset[1] = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=tr_cifar)
-    tr_svhn = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=[0.4377,0.4438,0.4728],
-                                                                                std=[0.198,0.201,0.197])])
+    tr_svhn = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=[0.4377, 0.4438, 0.4728],
+                                                                                std=[0.198, 0.201, 0.197])])
     dataset[2] = torchvision.datasets.SVHN(root='./data', split='train', download=True, transform=tr_svhn)
     testset[2] = torchvision.datasets.SVHN(root='./data', split='test', download=True, transform=tr_svhn)
     tr_fmnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.2190,), (0.3318,)),
@@ -371,20 +386,23 @@ def get_five_datasets(batch_size, Nsamples=50, return_joint=False):
     trainset, devset, sampleset = {}, {}, {}
     for n, p in dataset.items():
         train = int(0.95 * sizes[n])
-        trainset[n], devset[n] = torch.utils.data.random_split(p, [train, sizes[n] - train], generator=torch.Generator().manual_seed(42))
+        trainset[n], devset[n] = torch.utils.data.random_split(p, [train, sizes[n] - train],
+                                                               generator=torch.Generator().manual_seed(42))
         logger.debug("For dataset = %s: [train = %s, dev = %s]" % (names[n], str(train), str(sizes[n] - train)))
-        sampleset[n] = torch.utils.data.Subset(trainset[n], np.random.permutation(len(trainset[n]))[:Nsamples*batch_size])
+        sampleset[n] = torch.utils.data.Subset(trainset[n],
+                                               np.random.permutation(len(trainset[n]))[:Nsamples*batch_size])
 
     joint_trainset = torch.utils.data.ConcatDataset([trainset[i] for i in trainset.keys()])
-    train_data = lambda t_: torch.utils.data.DataLoader(trainset[t_], batch_size=batch_size, shuffle=True, num_workers=0)
-    test_data = lambda t_: torch.utils.data.DataLoader(testset[t_], batch_size=batch_size, shuffle=False, num_workers=0)
-    dev_data = lambda t_: torch.utils.data.DataLoader(devset[t_], batch_size=batch_size, shuffle=False, num_workers=0)
-    sample_data = lambda t_: torch.utils.data.DataLoader(sampleset[t_], batch_size=batch_size, shuffle=True, num_workers=0)
+    train_data = lambda t_: torch.utils.data.DataLoader(trainset[t_], batch_size=batch_size, shuffle=True,
+                                                        num_workers=0)
+    test_data = lambda t_: torch.utils.data.DataLoader(testset[t_], batch_size=batch_size, shuffle=False,
+                                                       num_workers=0)
+    dev_data = lambda t_: torch.utils.data.DataLoader(devset[t_], batch_size=batch_size, shuffle=False,
+                                                      num_workers=0)
+    sample_data = lambda t_: torch.utils.data.DataLoader(sampleset[t_], batch_size=batch_size, shuffle=True,
+                                                         num_workers=0)
 
     if not return_joint:
         return train_data, dev_data, test_data, sample_data
     else:
         return train_data, dev_data, test_data, joint_trainset
-
-
-

@@ -34,7 +34,8 @@ class CSQN:
         self.ev_ratio = ev_ratio
         self.method = method
         self.n_classes = n_classes
-        logger.debug('CSQN with method = %s, M = %d, reduction = %s, eps_ewc = %s' % (method, M, reduction, str(eps_ewc)))
+        logger.debug('CSQN with method = %s, M = %d, reduction = %s, eps_ewc = %s'
+                     % (method, M, reduction, str(eps_ewc)))
         self.task = 0
 
     """
@@ -52,7 +53,7 @@ class CSQN:
         return name + ' (%d)' % self.M
 
     """
-        Transforms a dictoinary or list of tensors to 1D tensor
+        Transforms a dictionary or list of tensors into 1D tensor
         :param dict or list param: dict or list of tensors
     """
     @staticmethod
@@ -145,7 +146,8 @@ class CSQN:
     @staticmethod
     def compute_XA_from_SY_SR1(S, Y, ewc):
         M = Y.size(1)
-        D, L, SBS = torch.zeros([M, M], device=device), torch.zeros([M, M], device=device), torch.zeros([M, M], device=device)
+        D, L, SBS = torch.zeros([M, M], device=device), torch.zeros([M, M], device=device), \
+                    torch.zeros([M, M], device=device)
         X = torch.zeros_like(Y, device=device)
         for i in range(M):
             D[i, i] = torch.dot(S[:, i].to(device), Y[:, i].to(device))
@@ -262,7 +264,6 @@ class CSQN:
         Anew[Aold.size(0):, Aold.size(1):] = A
         return torch.cat((Xold, X), dim=1), Anew
 
-
     """
         Computes Z, combining the new and old Z. If method == 'BFGS' and reduction == 'none', then X, A are computed
         :param torch.tensor S: an N times M tensor
@@ -312,7 +313,6 @@ class CSQN:
     def HVP_XA(vec, init, X, A):
         return init * vec + torch.matmul(X, torch.matmul(A, torch.matmul(torch.transpose(X, 0, 1), vec)))
 
-
     """
         Puts Z and init on the desired device
         :param bool cpu: (optional) if True, moves Z and init to cpu, else to device
@@ -353,22 +353,21 @@ class CSQN:
         Snew, Ynew = None, None
         if self.method == 'SR1':
             for i in range(self.M):
-                X, A = self.compute_XA_from_SY_SR1(S[:,:i], Y[:,:i], ewc)
-                Bs = self.HVP_XA(S[:,i], ewc, X.to(device), A.to(device))
-                if abs(torch.dot(S[:,i], Y[:,i] - Bs)) > self.eps * torch.dot(S[:,i], S[:,i]):
+                X, A = self.compute_XA_from_SY_SR1(S[:, :i], Y[:, :i], ewc)
+                Bs = self.HVP_XA(S[:, i], ewc, X.to(device), A.to(device))
+                if abs(torch.dot(S[:, i], Y[:, i] - Bs)) > self.eps * torch.dot(S[:, i], S[:, i]):
                     try:
-                        Snew, Ynew = torch.cat((Snew, S[:,i].view(1, -1)), 0), torch.cat((Ynew, Y[:,i].view(1, -1)), 0)
+                        Snew, Ynew = torch.cat((Snew, S[:, i].view(1, -1)), 0), torch.cat((Ynew, Y[:, i].view(1, -1)), 0)
                     except:
-                        Snew, Ynew = S[:,i].view(1, -1), Y[:,i].view(1, -1)
+                        Snew, Ynew = S[:, i].view(1, -1), Y[:, i].view(1, -1)
         else:
             for i in range(self.M):
-                if torch.dot(S[:,i], Y[:,i]) > self.eps * torch.dot(S[:,i], S[:,i]):
+                if torch.dot(S[:, i], Y[:, i]) > self.eps * torch.dot(S[:, i], S[:, i]):
                     try:
-                        Snew, Ynew = torch.cat((Snew, S[:,i].view(1, -1)), 0), torch.cat((Ynew, Y[:,i].view(1, -1)), 0)
+                        Snew, Ynew = torch.cat((Snew, S[:, i].view(1, -1)), 0), torch.cat((Ynew, Y[:, i].view(1, -1)), 0)
                     except:
-                        Snew, Ynew = S[:,i].view(1, -1), Y[:,i].view(1, -1)
+                        Snew, Ynew = S[:, i].view(1, -1), Y[:, i].view(1, -1)
         return torch.transpose(Snew, 0, 1).cpu(), torch.transpose(Ynew, 0, 1).cpu()
-
 
     """
         Samples the curvature pairs to construct S and Y
@@ -385,7 +384,7 @@ class CSQN:
             s = - torch.normal(mean=torch.zeros_like(std, device=device), std=std)
             try:
                 S = torch.cat((S, s.view(1, -1)), 0)  # add vector to S
-            except Exception as e:
+            except:
                 S = s.view(1, -1)  # S was None, initialize it with S
         S = torch.transpose(S, 0, 1).cpu()  # S is M*N, must be N*M
         net_ = net_.to(device)
@@ -430,10 +429,9 @@ class CSQN:
             if self.is_shared(n):
                 y = torch.cat((y, p.view(-1)))  # gather the (shared) parameters in a vector
         if hasattr(self, 'Z'):
-            return  alpha * torch.dot(y - self.x_old, self.HVP_Z(y - self.x_old, self.init, self.Z))
+            return alpha * torch.dot(y - self.x_old, self.HVP_Z(y - self.x_old, self.init, self.Z))
         else:
             return alpha * torch.dot(y - self.x_old, self.HVP_XA(y - self.x_old, self.init, self.X, self.A))
-
 
     """
         Updates the CSQN object: computes S, Y and Z and combines the new and the old Z
@@ -456,4 +454,3 @@ class CSQN:
         self.to_device()
         torch.cuda.empty_cache()
         self.task += 1
-

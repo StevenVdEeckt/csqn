@@ -5,10 +5,15 @@ import torch.nn.init as init
 import logging
 from collections import OrderedDict
 
+"""
+    Module containing the models used in the Continual Learning experiments
+"""
+
 logger = logging.getLogger('main')
 
+
 """ 
-    ResNet for 32x32 input with 3 channels (by Yerlan Idelbayev)
+    ResNet for 32x32 input with 3 channels (code by Yerlan Idelbayev)
     - copied from https://github.com/akamaster/pytorch_resnet_cifar10
 """
 def _weights_init(m):
@@ -140,9 +145,8 @@ class LeNet_Small(nn.Module):
         return x
 
 
-
 """
-    LeNet network
+    LeNet network - large
     :param int or list n_classes: the number of classes - length of num_classes sets the number of output layers
     :param int n_channels: (optional) number of input channels
 
@@ -193,7 +197,6 @@ class MLP(nn.Module):
         self.kf = {'input': {}, 'pre-activation': {}, 'post-activation': {}}
         self.layers_in_reverse_order = ['classifier.weight', 'linear2.weight', 'linear1.weight']
 
-
     def forward(self, x):
         self.act['linear1'] = x
         self.kf['input']['linear1'] = x
@@ -225,15 +228,18 @@ def get_net(model, n_classes, return_shared_layers=False, **kwargs):
         if not return_shared_layers:
             return ResNet(num_classes=n_classes)
         else:
-            return ResNet(num_classes=n_classes), [n for n, p in ResNet(num_classes=n_classes).state_dict().items() if 'linear' not in n]
+            return ResNet(num_classes=n_classes), [n for n, p in ResNet(num_classes=n_classes).state_dict().items()
+                                                   if 'linear' not in n]
     elif model == 'lenet':
-        net = LeNet(n_classes=n_classes, n_channels= kwargs.get('n_channels')) if 'n_channels' in kwargs else LeNet(n_classes=n_classes)
+        net = LeNet(n_classes=n_classes, n_channels=kwargs.get('n_channels')) if 'n_channels' in kwargs \
+            else LeNet(n_classes=n_classes)
         if not return_shared_layers:
             return net
         else:
             return net, [n for n, p in net.state_dict().items() if 'fc3' not in n]
     elif model == 'lenet-small':
-        net = LeNet_Small(n_classes=n_classes, n_channels= kwargs.get('n_channels')) if 'n_channels' in kwargs else LeNet_Small(n_classes=n_classes)
+        net = LeNet_Small(n_classes=n_classes, n_channels=kwargs.get('n_channels')) if 'n_channels' in kwargs \
+            else LeNet_Small(n_classes=n_classes)
         if not return_shared_layers:
             return net
         else:
@@ -241,4 +247,3 @@ def get_net(model, n_classes, return_shared_layers=False, **kwargs):
     elif model == 'mlp':
         return MLP(n_classes=n_classes, bias=kwargs.get('bias') if 'bias' in kwargs else True)
     raise Exception("model must be resnet, lenet, mlp or mlp-small but received %s" % model)
-

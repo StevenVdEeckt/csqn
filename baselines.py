@@ -8,8 +8,23 @@ import numpy as np
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 """ 
-Baselines implementation: EWC, MAS, LWF, OGD, GPM
-
+    Baselines implementations: 
+       -- Elastic Weight Consolidation (EWC) (Kirkpatrick et al., 2016)
+       -- Memory-Aware Synapses (MAS) (Aljundi et al., 2018)
+       -- Learning Without Forgetting (LWF) (Li et al., 2017)
+       -- Orthogonal Gradient Descent (OGD) (Farajtabar et al., 2019)
+       -- Gradient Projection Memory (GPM) (Saha et al., 2021) 
+       
+    References:
+    James Kirkpatrick, Razvan Pascanu, Neil Rabinowitz, Joel Veness, Guillaume Desjardins, Andrei A. Rusu, Kieran Milan, 
+        John Quan, Tiago Ramalho, Agnieszka Grabska-Barwinska, Demis Hassabis, Claudia Clopath, Dharshan Kumaran, 
+        and Raia Hadsell. Overcoming catastrophic forgetting in neural networks, 2017.
+    Rahaf Aljundi, Francesca Babiloni, Mohamed Elhoseiny, Marcus Rohrbach, and Tinne Tuytelaars. 
+        Memory aware synapses: Learning what (not) to forget, 2018.
+    Zhizhong Li and Derek Hoiem. Learning without forgetting, 2017
+    Mehrdad Farajtabar, Navid Azizan, Alex Mott, and Ang Li. Orthogonal gradient descent for
+        continual learning, 2019.
+    Gobinda Saha, Isha Garg, and Kaushik Roy. Gradient projection memory for continual learning, 2021.
 """
 
 logger = logging.getLogger('main')
@@ -21,8 +36,6 @@ logger.debug('Device in baselines.py = %s' % str(device))
     :param list shared_layers: (optional) if provided, only layers in shared_layers are subject to regularization
     :param int n_classes: (optional) required for split experiments
 """
-
-
 class EWC:
     def __init__(self, shared_layers=None, n_classes=None):
         self.is_shared = lambda x: shared_layers is None or x in shared_layers
@@ -61,7 +74,8 @@ class EWC:
             self.importance_weights = {n: p / k for n, p in iw.items()}
         else:
             self.importance_weights = {n: self.importance_weights[n] + p / k for n, p in iw.items()}
-        logger.debug("Norm of FIM = %s" % str(torch.norm(torch.cat([p.view(-1) for n, p in self.importance_weights.items()]))))
+        logger.debug("Norm of FIM = %s" % str(torch.norm(torch.cat([p.view(-1) for n, p in
+                                                                    self.importance_weights.items()]))))
         net_.cpu()
 
     """ 
@@ -82,8 +96,6 @@ class EWC:
     Memory-Aware Synapses (Aljundi et al., 2018)
     :param list shared_layers: (optional) if provided, it contains the layers subject to regularization
 """
-
-
 class MAS:
     def __init__(self, shared_layers=None):
         self.is_shared = lambda x: shared_layers is None or x in shared_layers
@@ -118,7 +130,8 @@ class MAS:
             self.importance_weights = {n: p / k for n, p in iw.items()}
         else:
             self.importance_weights = {n: self.importance_weights[n] + p / k for n, p in iw.items()}
-        logger.debug("Norm of IW = %s" % str(torch.norm(torch.cat([p.view(-1) for n, p in self.importance_weights.items()]))))
+        logger.debug("Norm of IW = %s" % str(torch.norm(torch.cat([p.view(-1) for n, p in
+                                                                   self.importance_weights.items()]))))
         net_.cpu()
 
     """ 
@@ -139,8 +152,6 @@ class MAS:
     Learning without Forgetting (Li et al., 2017)
     :param float temperature: (optional) temperature for knowledge distillation, default 2 (as in the original paper)
 """
-
-
 class LWF:
     def __init__(self,  temperature=2):
         self.T = temperature
@@ -191,8 +202,6 @@ class LWF:
     :param int M: (optional) number of gradients to store per task - default 200 as in the original paper
     :param int n_classes: (optional) required if multi-head classification 
 """
-
-
 class OGD:
     def __init__(self, shared_layers=None, M=200, n_classes=None):
         self.is_shared = lambda x: shared_layers is None or x in shared_layers
@@ -216,7 +225,7 @@ class OGD:
     @staticmethod
     def gram_schmidt(vec, S):
         for i in range(S.size(1)):
-            vec = vec - torch.dot(vec, S[:,i]) / torch.dot(S[:,i], S[:,i]) * S[:,i]
+            vec = vec - torch.dot(vec, S[:, i]) / torch.dot(S[:, i], S[:, i]) * S[:, i]
         return vec
 
     """
@@ -245,8 +254,6 @@ class OGD:
             s = self.to_vec(iw)
             try:
                 s = self.gram_schmidt(s, torch.transpose(S, 0, 1))
-                #for j in range(S.size(0)):
-                #    s = s - torch.dot(s, S[j, :]) / torch.dot(S[j, :], S[j, :]) * S[j, :]
                 S = torch.cat((S, s.view(1, -1)), 0)
             except:
                 S = s.view(1, -1)
@@ -267,9 +274,6 @@ class OGD:
     """
     def regularize(self, grad):
         return self.gram_schmidt(grad, self.S)
-        #for i in range(self.S.size(1)):
-        #    grad = grad - torch.dot(grad, self.S[:, i]) / torch.dot(self.S[:, i], self.S[:, i]) * self.S[:, i]
-        #return grad
 
 
 """
@@ -279,7 +283,7 @@ class OGD:
     :param int n_samples: number of samples to take for each task and layer
 """
 class GPM:
-    def __init__(self, threshold=np.array([0.95,0.99,0.99]), n_samples=300):
+    def __init__(self, threshold=np.array([0.95, 0.99, 0.99]), n_samples=300):
         self.threshold = threshold
         self.n_samples = n_samples
 
@@ -365,7 +369,8 @@ class GPM:
         :param nn.Module model: the neural network
         :param list feature_list: representing the GPM
     """
-    def get_feature_mat(self, model, feature_list):
+    @staticmethod
+    def get_feature_mat(model, feature_list):
         feature_mat = []
         for i in range(len(model.act)):
             Uf = torch.Tensor(np.dot(feature_list[i], feature_list[i].transpose())).to(device)
@@ -393,12 +398,10 @@ class GPM:
         return grad - torch.matmul(grad, self.feature_mat[k]).view(grad.size())
 
 
-
 class KF_EWC:
     def __init__(self):
         self.Q = {}
         self.H = {}
-
 
     """
         Transform dictionary of tensors into 1D tensor
@@ -407,8 +410,6 @@ class KF_EWC:
     @staticmethod
     def to_vec(param):
         return torch.cat([p.view(-1) for n, p in param.items()])
-
-
 
     def update_KF(self, net_, dataloader):
         net_ = net_.to(device)
@@ -421,7 +422,6 @@ class KF_EWC:
             loss = criterion(outputs, labels.to(device))
             self.compute_HQ(net_, loss)
         self.old_net = {n: copy.deepcopy(p.detach()) for n, p in net_.named_parameters() if self.is_shared(n)}
-
 
     def compute_HQ(self, net_, loss):
         for layer in net_.layers_in_reverse_order:
@@ -470,8 +470,6 @@ class KF_EWC:
                 self.Q[layer] = Q
             H_old = 1.0 * H_new
             prev_layer = layer
-
-
 
     def regularize(self, current_net, alpha):
         y, x = torch.tensor([], device=device), torch.tensor([], device=device)

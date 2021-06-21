@@ -5,11 +5,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 import copy
 import logging
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 logger = logging.getLogger('main')
 logger.debug('Device in train_functions.py = %s' % str(device))
+
+"""
+    Module containing functions helpful for training and testing Continual Learning models
+"""
 
 
 """
@@ -23,8 +25,6 @@ logger.debug('Device in train_functions.py = %s' % str(device))
   :param int num_classes: (optional) required for split experiments
   :param list shared_layers: (optional) required for split experiments with multi-head classifier
 """
-
-
 def init(train_, dev_, test_, results_name, tasks, num_epochs=5, num_classes=None, shared_layers=None):
     global n_classes
     n_classes = num_classes
@@ -38,7 +38,7 @@ def init(train_, dev_, test_, results_name, tasks, num_epochs=5, num_classes=Non
     n_epochs = num_epochs
     global is_shared, multihead
     is_shared = lambda x: shared_layers is None or x in shared_layers
-    multihead = shared_layers != None
+    multihead = shared_layers is not None
 
 
 """
@@ -48,8 +48,6 @@ def init(train_, dev_, test_, results_name, tasks, num_epochs=5, num_classes=Non
     :param str dataset: (optional) dataset to test, default is test set
     :param bool print_result: (optional) print result or not - default is True
 """
-
-
 def test(net_, task, dataset='test', print_result=True):
     correct, total = 0, 0
     net_ = net_.to(device)
@@ -79,8 +77,6 @@ def test(net_, task, dataset='test', print_result=True):
   :param bool add: (optional) True if the model should be saved, default is True
   :param bool dev: (optional) True if evaluated on dev set instead of test set (in that case results are not added)
 """
-
-
 def test_and_update(model_, name, add=True, dev=False):
     R = torch.zeros([n_tasks, n_tasks])
     if not isinstance(model_, list):
@@ -117,8 +113,6 @@ def test_and_update(model_, name, add=True, dev=False):
   transform dictionary or list of paramaters into 1D torch tensor
   :param dict or list param: dictionary or list of tensors
 """
-
-
 def param_to_x(param):
     if isinstance(param, dict):
         return torch.cat([p.view(-1) for n, p in param.items()])
@@ -133,8 +127,6 @@ def param_to_x(param):
    :param torch.tensor x: 1D tensor
    :param dict param_sizes: dictionary with for each key in the new dictionary and value 'total' and 'size'
 """
-
-
 def x_to_params(x, param_sizes):
     k = 0
     param = {}
@@ -149,8 +141,6 @@ def x_to_params(x, param_sizes):
    :param nn.Module model: the neural network
    :param function grad_fn: function to be applied to 1D tensor of gradients of model
 """
-
-
 def update_gradients(model, grad_fn):
     grads = {}
     sizes = {}
@@ -170,19 +160,18 @@ def update_gradients(model, grad_fn):
     grads_ = x_to_params(x_, sizes)
     # and we use the state dict to update the gradients
     for n, p in model.named_parameters():
-      if is_shared(n):
-       try:
-           p.grad = grads_[n].clone()
-       except:
-           continue
+        if is_shared(n):
+            try:
+                p.grad = grads_[n].clone()
+            except:
+                continue
+
 
 """
     Updates the gradients of the model - but layer-wise
     :param nn.Module model: the neural network
     :param function grad_fn: function to be applied to the gradient of the layers
 """
-
-
 def update_gradients_layerwise(model, grad_fn):
     for k, (m, params) in enumerate(model.named_parameters()):
         params.grad.data = grad_fn(params.grad.data, k)
@@ -193,8 +182,6 @@ def update_gradients_layerwise(model, grad_fn):
   :param nn.Module model: neural network
   :param list layers: list of layers to be frozen
 """
-
-
 def freeze(model, layers):
     for n, p in model.named_parameters():
         if n in layers:
@@ -213,8 +200,6 @@ def freeze(model, layers):
    :param list freeze_layers: (optional) layers to freeze
    :param str opt: (optional) optimizer to learn the network with (adam or sgd) - default is adam
 """
-
-
 def train_net(net_, task, reg_loss=None, grad_fn=None, lay_grad_fn=None, epochs=-1, eval=False, save='',
               freeze_layers=[], opt='adam'):
     if epochs == -1:
@@ -222,7 +207,7 @@ def train_net(net_, task, reg_loss=None, grad_fn=None, lay_grad_fn=None, epochs=
     criterion = nn.CrossEntropyLoss()
     if opt == 'sgd':
         optimizer = optim.SGD(net_.parameters(), lr=0.001, momentum=0.9)
-    elif opt == 'adam':
+    else:
         optimizer = optim.Adam(net_.parameters())
     k = 0
     trainloader_ = train_data(task)
@@ -237,10 +222,10 @@ def train_net(net_, task, reg_loss=None, grad_fn=None, lay_grad_fn=None, epochs=
             outputs = net_(inputs.to(device)) if not multihead else net_(inputs.to(device), task)
             loss = criterion(outputs, labels.to(device))
             if reg_loss is not None:
-               try:
-                  loss += reg_loss(net_)
-               except:
-                  loss += reg_loss(net_, inputs) if n_classes is None else reg_loss(net_, inputs, task)
+                try:
+                    loss += reg_loss(net_)
+                except:
+                    loss += reg_loss(net_, inputs) if n_classes is None else reg_loss(net_, inputs, task)
             loss.backward()
             if grad_fn is not None:
                 update_gradients(net_, grad_fn)
@@ -263,5 +248,3 @@ def train_net(net_, task, reg_loss=None, grad_fn=None, lay_grad_fn=None, epochs=
     del trainloader_
     net_.cpu()
     logger.debug('Finished Training')
-
-
