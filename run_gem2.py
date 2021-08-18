@@ -38,9 +38,7 @@ parser.add_argument('--angle', type=int, default=5,
                     help='Angle of the rotation. Only used when Rotated MNIST experiments are selected')
 parser.add_argument('--log_file', type=str, default='log',
                     help='Name of the log file - default is just log. If T, results are written to Terminal')
-parser.add_argument('--TCV', type=int, default=5, help='Number of tasks in CV to determine optimal hyper-parameters')
-parser.add_argument('--lambdas', type=str, default='none', help='Lambdas for which to test the method. '
-                                                              'Write them as a string, separated by commas.')
+parser.add_argument('--alpha', type=float, default=1, help='Alpha to  run the method with')
 args = parser.parse_args()
 
 
@@ -54,15 +52,6 @@ logger = logging.getLogger('main')
 
 logging.info("Set the device: %s", str(device))
 
-
-""" Hyper-parameter search settings """
-T_CV = args.TCV
-logger.debug("Methodology of (Lopez-Paz et al., 2017) with T_CV = %d" % T_CV)
-lambdas = {'EWC': [1, 1000, 10000, 100000, 1000000],
-           'MAS': [1, 10, 100, 1000, 10000],
-           'LWF': [0.01, 0.1, 1, 10, 100],
-           'CSQN': [1, 100, 1000, 10000, 100000],
-           'KF': [1, 1000, 10000, 100000, 1000000]}
 
 """ Number of runs """
 start_id, iterations = args.start, args.iter
@@ -108,8 +97,6 @@ elif args.experiments == 2:
 else:
     raise Exception('Please choose 0, 1 or 2 for --experiments')
 
-""" T_CV cannot be larger than the number of tasks """
-T_CV = min(T_CV, n_tasks-1)
 
 """ Printing information related to neural network """
 net = get_net()
@@ -142,13 +129,6 @@ else:
     method = args.method
     qnm, reduction, M = None, None, None
 
-""" Determine the regularization weights to be tested.. """
-if method in lambdas.keys():
-    if args.lambdas != 'none':
-        lambdas_ = args.lambdas.split('.')
-        lambdas_ = [float(lambdas_[i]) for i in range(len(lambdas_))]
-    else:
-        lambdas_ = lambdas[method]
 
 
 
@@ -162,68 +142,6 @@ arguments = {'EWC': (shared_layers, n_classes), 'MAS': (shared_layers,), 'LWF': 
              'OGD': (shared_layers, 200, n_classes),
              'CSQN': (qnm, shared_layers, M, reduction, n_classes), 'KF': ()}
 
-logger.debug('Step 1: hyper-parameter search')
-best_alpha = 0
-if method in lambdas.keys():  # only required for methods which do have a regularization weight
-
-    best_avg = 0
-
-    for alpha in lambdas_:
-
-        regulator = choose_regulator[method](*arguments[method])
-
-        net_ = get_net()
-        net_.load_state_dict(net_one.state_dict())
-
-        for task in range(T_CV):
-
-            logger.info("Adapting Task %d to Task %d" % (task, task + 1))
-            names, accs = [('Task %d' % i) for i in range(task + 1)], [
-                round(test(net_, i, 'dev', print_result=False), 2)
-                for i in range(task + 1)]
-            logger.info('Initial model: ' + str(names) + " = " + str(accs))
-            if method == 'EWC':
-                regulator.compute_FIM(net_, sample_data(task),
-                                      task if shared_layers is not None else None)
-            elif method == 'MAS':
-                regulator.compute_IW(net_, sample_data(task),
-                                     task if shared_layers is not None else None)
-            elif method == 'LWF':
-                old_net = get_net()
-                old_net.load_state_dict(net_.state_dict())
-                regulator.set_old_net(old_net)
-                if shared_layers is not None:
-                    logger.debug('Method = LWF, running training non-shared layers..')
-                    train_net(net_, task + 1, epochs=n_epoch // 2, freeze_layers=shared_layers)
-                    names, accs = [('Task %d' % i) for i in range(task + 1)], [
-                        round(test(net_, i, 'dev', print_result=False), 2)
-                        for i in range(task + 1)]
-                    logger.info('Initial model: ' + str(names) + " = " + str(accs))
-
-            elif method == 'CSQN':
-                regulator.update(net_, sample_data(task), task if shared_layers is not None else None)
-            elif method == 'KF':
-                regulator.update_KF(net_, sample_data(task), task if shared_layers is not None else None)
-
-            logger.debug('alpha = %s' % alpha)
-            if method in ['EWC', 'MAS', 'CSQN', 'KF']:
-                train_net(net_, task + 1, reg_loss=lambda x: regulator.regularize(x, alpha), epochs=n_epoch)
-            else:
-                if shared_layers is None:
-                    train_net(net_, task + 1, reg_loss=lambda x, y: regulator.regularize(x, y, alpha), epochs=n_epoch)
-                else:
-                    train_net(net_, task + 1, reg_loss=lambda x, y: regulator.regularize(x, y, alpha, task + 1),
-                              epochs=n_epoch)
-        names, accs = [('Task %d' % i) for i in range(T_CV+1)], [round(test(net_, i, 'dev', print_result=False), 2)
-                                                               for i in range(T_CV+1)]
-        logger.info('Final model: ' + str(names) + " = " + str(accs))
-        avg_acc = sum(accs) / len(accs)
-        if avg_acc > best_avg:
-            best_avg = avg_acc
-            best_alpha = alpha
-
-    opt_alpha = best_alpha
-
 
 logger.info("")
 logger.debug('Step 2: The experiments with the optimal regularization weight...')
@@ -231,7 +149,7 @@ logger.debug('Step 2: The experiments with the optimal regularization weight...'
 
 for num in range(start_id, start_id + iterations):
 
-    alpha = best_alpha
+    alpha = args.alpha
     mod_list = [copy.deepcopy(net_one).state_dict()]
 
     net_ = get_net()
@@ -282,7 +200,7 @@ for num in range(start_id, start_id + iterations):
             acc = test(net_, task + 1, 'dev')
             logger.info("[Task %d] = [%.2f]" % (task + 1, acc))
 
-            logger.info("Finished: best_alpha = %s - with accuracy of %.2f" % (str(best_alpha), acc))
+            logger.info("Finished: best_alpha = %s - with accuracy of %.2f" % (str(alpha), acc))
             mod_list.append(net_.state_dict())
         else:
             train_net(net_, task + 1, grad_fn=lambda x: regulator.regularize(x), epochs=n_epoch, opt='sgd')

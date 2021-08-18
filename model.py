@@ -54,10 +54,23 @@ class BasicBlock(nn.Module):
                     nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
                     nn.BatchNorm2d(self.expansion * planes)
                 )
+        self.layers_in_reverse_order = ['conv1.weight', 'conv2.weight', 'bn1.weight', 'bn2.weight']
+        self.kf = {'input': {}, 'pre-activation':  {}}
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
+        self.kf['input']['conv1.weight'] = x
+        out = self.conv1(x)
+        self.kf['pre-activation']['conv1.weight'] = out
+        self.kf['input']['bn1.weight'] = F.batch_norm(out, self.bn1.running_mean, self.bn1.running_var)
+        out = self.bn1(out)
+        self.kf['pre-activation']['bn1.weight'] = out
+        out = F.relu(out)
+        self.kf['input']['conv2.weight'] = out
+        out = self.conv2(out)
+        self.kf['pre-activation']['conv2.weight'] = out
+        self.kf['input']['bn2.weight'] = F.batch_norm(out, self.bn2.running_mean, self.bn2.running_var)
+        out = self.bn2(out)
+        self.kf['pre-activation']['bn2.weight'] = out
         out += self.shortcut(x)
         out = F.relu(out)
         return out
@@ -82,6 +95,27 @@ class ResNet_(nn.Module):
                 self.add_module('linear' + str(i), self.classifier[i])
 
         self.apply(_weights_init)
+        self.layers_in_reverse_order = ['conv1.weight', 'bn1.weight']
+        self.kf = {'input': {}, 'pre-activation': {}}
+        for i in range(len(self.layer1)):
+            for name in self.layer1[i].layers_in_reverse_order:
+                n = 'layer1.%d.%s' % (i, name)
+                self.layers_in_reverse_order.append(n)
+        for i in range(len(self.layer2)):
+            for name in self.layer2[i].layers_in_reverse_order:
+                n = 'layer2.%d.%s' % (i, name)
+                self.layers_in_reverse_order.append(n)
+        for i in range(len(self.layer3)):
+            for name in self.layer3[i].layers_in_reverse_order:
+                n = 'layer3.%d.%s' % (i, name)
+                self.layers_in_reverse_order.append(n)
+
+    def update_kf_dict(self, layer, prefix):
+        for n, p in layer.kf['input'].items():
+           self.kf['input']["%s.%s" % (prefix, n)] = p
+        for n, p in layer.kf['pre-activation'].items():
+           self.kf['pre-activation']['%s.%s' % (prefix, n)] = p
+
 
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -93,13 +127,27 @@ class ResNet_(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x, i):
-        out = F.relu(self.bn1(self.conv1(x)))
+        self.kf['input']['conv1.weight'] = x
+        out = self.conv1(x)
+        self.kf['pre-activation']['conv1.weight'] = out
+        self.kf['input']['bn1.weight'] = F.batch_norm(out, self.bn1.running_mean, self.bn1.running_var)
+        out = self.bn1(out)
+        self.kf['pre-activation']['bn1.weight'] = out
+        out = F.relu(out)
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
         out = F.avg_pool2d(out, out.size()[3])
         out = out.view(out.size(0), -1)
         out = self.classifier[i](out)
+        for j in range(len(self.layer1)):
+            self.update_kf_dict(self.layer1[j], 'layer1.%d' % j)
+        for j in range(len(self.layer2)):
+            self.update_kf_dict(self.layer2[j], 'layer2.%d' % j)
+        for j in range(len(self.layer3)):
+            self.update_kf_dict(self.layer3[j], 'layer3.%d' % j)
+
+
         return out
 
 
@@ -134,13 +182,27 @@ class LeNet_Small(nn.Module):
             for i in range(len(n_classes)):
                 self.classifier[i] = nn.Linear(84, n_classes[i])
                 self.add_module('fc3' + str(i), self.classifier[i])
+        self.kf = {'input': {}, 'pre-activation': {}}
+        self.layers_in_reverse_order = ['conv1.weight', 'conv2.weight', 'fc1.weight', 'fc2.weight']
 
     def forward(self, x, i):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        self.kf['input']['conv1.weight'] = x
+        x = self.conv1(x)
+        self.kf['pre-activation']['conv1.weight'] = x
+        x = self.pool(F.relu(x))
+        self.kf['input']['conv2.weight'] = x
+        x = self.conv2(x)
+        self.kf['pre-activation']['conv2.weight'] = x
+        x = self.pool(F.relu(x))
         x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
+        self.kf['input']['fc1.weight'] = x
+        x = self.fc1(x)
+        self.kf['pre-activation']['fc1.weight'] = x
+        x = F.relu(x)
+        self.kf['input']['fc2.weight'] = x
+        x = self.fc2(x)
+        self.kf['pre-activation']['fc2.weight'] = x
+        x = F.relu(x)
         x = self.classifier[i](x)
         return x
 
@@ -152,13 +214,13 @@ class LeNet_Small(nn.Module):
 
 """
 class LeNet(nn.Module):
-    def __init__(self, n_classes, n_channels=3):
+    def __init__(self, n_classes, n_channels=3, bias=True):
         super(LeNet, self).__init__()
-        self.conv1 = nn.Conv2d(n_channels, 20, 5)
+        self.conv1 = nn.Conv2d(n_channels, 20, 5, bias=bias)
         self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(20, 50, 5)
-        self.fc1 = nn.Linear(50 * 5 * 5, 500)
-        self.fc2 = nn.Linear(500, 84)
+        self.conv2 = nn.Conv2d(20, 50, 5, bias=bias)
+        self.fc1 = nn.Linear(50 * 5 * 5, 500, bias=bias)
+        self.fc2 = nn.Linear(500, 84, bias=bias)
         if isinstance(n_classes, int):
             self.classifier = nn.Linear(84, n_classes)
         else:
@@ -166,13 +228,29 @@ class LeNet(nn.Module):
             for i in range(len(n_classes)):
                 self.classifier[i] = nn.Linear(84, n_classes[i])
                 self.add_module('fc3' + str(i), self.classifier[i])
+        self.kf = {'input': {}, 'pre-activation': {}}
+        self.layers_in_reverse_order = ['conv1.weight', 'conv2.weight', 'fc1.weight', 'fc2.weight']
 
     def forward(self, x, i=None):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        self.kf['input']['conv1.weight'] = x
+        x = self.conv1(x)
+        self.kf['pre-activation']['conv1.weight'] = x
+        x = F.relu(x)
+        x = self.pool(x)
+        self.kf['input']['conv2.weight'] = x
+        x = self.conv2(x)
+        self.kf['pre-activation']['conv2.weight'] = x
+        x = F.relu(x)
+        x = self.pool(x)
         x = x.view(-1, 50 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
+        self.kf['input']['fc1.weight'] = x
+        x = self.fc1(x)
+        self.kf['pre-activation']['fc1.weight'] = x
+        x = F.relu(x)
+        self.kf['input']['fc2.weight'] = x
+        x = self.fc2(x)
+        self.kf['pre-activation']['fc2.weight'] = x
+        x = F.relu(x)
         x = self.classifier[i](x) if i is not None else self.classifier(x)
         return x
 
@@ -194,21 +272,20 @@ class MLP(nn.Module):
         self.classifier = nn.Linear(n_hidden, n_classes, bias=bias)
         self.dropout = nn.Dropout(0.25)
         self.act = OrderedDict()
-        self.kf = {'input': {}, 'pre-activation': {}, 'post-activation': {}}
+        self.kf = {'input': {}, 'pre-activation': {}}
         self.layers_in_reverse_order = ['classifier.weight', 'linear2.weight', 'linear1.weight']
 
     def forward(self, x):
         self.act['linear1'] = x
-        self.kf['input']['linear1'] = x
-        x = self.linear1(x.view(-1, self.n_channels * self.input_dim * self.input_dim))
+        x = x.view(-1, self.n_channels * self.input_dim * self.input_dim)
+        self.kf['input']['linear1.weight'] = x
+        x = self.linear1(x)
         self.kf['pre-activation']['linear1.weight'] = x
         x = self.dropout(F.relu(x))
-        self.kf['post-activation']['linear1.weight'] = x
-        self.kf['input']['linear1.weight'] = x
+        self.kf['input']['linear2.weight'] = x
         self.act['linear2'] = x
         x = self.linear2(x)
         self.kf['pre-activation']['linear2.weight'] = x
-        self.kf['post-activation']['linear2.weight'] = x
         x = self.dropout(F.relu(x))
         self.kf['input']['classifier.weight'] = x
         self.act['classifier'] = x
@@ -231,8 +308,9 @@ def get_net(model, n_classes, return_shared_layers=False, **kwargs):
             return ResNet(num_classes=n_classes), [n for n, p in ResNet(num_classes=n_classes).state_dict().items()
                                                    if 'linear' not in n]
     elif model == 'lenet':
-        net = LeNet(n_classes=n_classes, n_channels=kwargs.get('n_channels')) if 'n_channels' in kwargs \
-            else LeNet(n_classes=n_classes)
+        bias = kwargs.get('bias') if 'bias' in kwargs else True
+        net = LeNet(n_classes=n_classes, n_channels=kwargs.get('n_channels'), bias=bias) if 'n_channels' in kwargs \
+            else LeNet(n_classes=n_classes, bias=bias)
         if not return_shared_layers:
             return net
         else:

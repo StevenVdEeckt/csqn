@@ -28,7 +28,12 @@ class CSQN:
                  eps=1e-8, ev_ratio=0.95):
         self.is_shared = lambda x: shared_layers is None or x in shared_layers
         self.M = M
-        self.red_strategy = reduction
+        if reduction == 'normalize':
+            self.red_strategy = 'none'
+            self.normalize_ewc = True
+        else:
+            self.red_strategy = reduction
+            self.normalize_ewc = False
         self.eps_ewc = eps_ewc
         self.eps = eps
         self.ev_ratio = ev_ratio
@@ -48,7 +53,7 @@ class CSQN:
         else:
             name += '-S'
         if self.red_strategy != 'none':
-            red_strat = {'auto': 'EV', 'split': 'SPL', 'tree': '2N', 'm': 'CT', 'once': '1N'}
+            red_strat = {'auto': 'EV', 'split': 'SPL', 'tree': '2N', 'm': 'CT', 'once': '1N', 'weight': 'W', 'ten': 'TN'}
             name += ' ' + red_strat[self.red_strategy]
         return name + ' (%d)' % self.M
 
@@ -191,19 +196,22 @@ class CSQN:
         Applies Singular Value Decomposition to Z to reduce the size of Z
         :param torch.tensor Z: an N times (2)M tensor
         :param bool ev: (optional) True if explained variance ratio must be considered, otherwise reduces to  size M
+        :param torch.tensor W: (optional) weight matrix for SVD
     """
-    def apply_SVD(self, Z, ev=True):
+    def apply_SVD(self, Z, ev=True, W=None, K=None):
         if Z.size(0) == 0:
             return Z
-        U, E, V = torch.linalg.svd(Z.to(device), full_matrices=False)  # compute SVD of Z
+        ZW = Z if W is None else Z * W
+        U, E, V = torch.linalg.svd(ZW.to(device), full_matrices=False)  # compute SVD of Z
         expl_var = torch.cumsum(E ** 2 / (E ** 2).sum(), dim=0)
         logger.debug("Explained variance ratio: %s" % str(expl_var))
         if not ev:
-            K = self.M
+            K = self.M if K is None else K
         else:
             K = (expl_var < self.ev_ratio).sum().item() + 1
         logger.debug("Z will be reduced from %d to %d" % (Z.size(1), K))
-        Z = np.sqrt(1.0 * Z.size(1) / K) * torch.matmul(U[:, :K] * E[:K], V[:K, :K]).cpu()
+        VW = V * (1 / W.to(device)) if W is not None else V
+        Z = np.sqrt(1.0 * Z.size(1) / K) * torch.matmul(U[:, :K] * E[:K], VW[:K, :K]).cpu()
         return Z
 
     """
@@ -247,6 +255,15 @@ class CSQN:
                 Z = self.apply_SVD(torch.cat((oldZ[:, -self.M:], Z), dim=1), ev=False)
                 oldZ = oldZ[:, :-self.M]
                 j = j // 2
+            return torch.cat((oldZ, Z), dim=1)
+        elif self.red_strategy == 'weight':
+            if self.task > 0:
+                W = torch.tensor([np.sqrt(self.task)] * oldZ.size(1) + [1] * Z.size(1)).float()
+            else:
+                W = None
+            return self.apply_SVD(torch.cat((oldZ, Z), dim=1), ev=False, W=W)
+        elif self.red_strategy == 'ten':
+            Z = self.apply_SVD(Z, ev=False, K=10)
             return torch.cat((oldZ, Z), dim=1)
 
     """
@@ -355,18 +372,26 @@ class CSQN:
             for i in range(self.M):
                 X, A = self.compute_XA_from_SY_SR1(S[:, :i], Y[:, :i], ewc)
                 Bs = self.HVP_XA(S[:, i], ewc, X.to(device), A.to(device))
+                logger.debug("At i = %d, condition is: %.8f > %.8f" % (i, abs(torch.dot(S[:, i], Y[:, i] - Bs)),
+                                                                       self.eps * torch.dot(S[:, i], S[:, i])))
                 if abs(torch.dot(S[:, i], Y[:, i] - Bs)) > self.eps * torch.dot(S[:, i], S[:, i]):
                     try:
                         Snew, Ynew = torch.cat((Snew, S[:, i].view(1, -1)), 0), torch.cat((Ynew, Y[:, i].view(1, -1)), 0)
                     except:
                         Snew, Ynew = S[:, i].view(1, -1), Y[:, i].view(1, -1)
+                else:
+                    logger.debug('Condition not satisfied for i = %d' % i)
         else:
             for i in range(self.M):
+                logger.debug("At i = %d, condition is: %.8f > %.8f" % (i, torch.dot(S[:, i], Y[:, i]),
+                                                                       self.eps * torch.dot(S[:, i], S[:, i])))
                 if torch.dot(S[:, i], Y[:, i]) > self.eps * torch.dot(S[:, i], S[:, i]):
                     try:
                         Snew, Ynew = torch.cat((Snew, S[:, i].view(1, -1)), 0), torch.cat((Ynew, Y[:, i].view(1, -1)), 0)
                     except:
                         Snew, Ynew = S[:, i].view(1, -1), Y[:, i].view(1, -1)
+                else:
+                    logger.debug("Condition not satisfied for i = %d" % i)
         return torch.transpose(Snew, 0, 1).cpu(), torch.transpose(Ynew, 0, 1).cpu()
 
     """
@@ -429,9 +454,9 @@ class CSQN:
             if self.is_shared(n):
                 y = torch.cat((y, p.view(-1)))  # gather the (shared) parameters in a vector
         if hasattr(self, 'Z'):
-            return alpha * torch.dot(y - self.x_old, self.HVP_Z(y - self.x_old, self.init, self.Z))
+            return alpha / 2 * torch.dot(y - self.x_old, self.HVP_Z(y - self.x_old, self.init, self.Z))
         else:
-            return alpha * torch.dot(y - self.x_old, self.HVP_XA(y - self.x_old, self.init, self.X, self.A))
+            return alpha / 2 * torch.dot(y - self.x_old, self.HVP_XA(y - self.x_old, self.init, self.X, self.A))
 
     """
         Updates the CSQN object: computes S, Y and Z and combines the new and the old Z
@@ -442,11 +467,20 @@ class CSQN:
     def update(self, net_, dataset, task=None):
         self.to_device(cpu=True)
         ewc = self.compute_FIM(net_, dataset, task)  # compute the FIM
-        logger.debug('Norm of EWC = %.4f' % torch.norm(ewc))
-        std = torch.sqrt(1 / (ewc + self.eps_ewc * ewc.max()))  # std used for sampling S
+        logger.debug('Norm of EWC = %.24f' % torch.norm(ewc))
+        if self.normalize_ewc:
+            std = torch.ones_like(ewc)
+        else:
+            std = torch.sqrt(1 / (ewc + self.eps_ewc * ewc.max()))  # std used for sampling S
+        logger.debug('Max of std = %.4f' % std.max())
         S, Y = self.sample_curvature_pairs(net_, dataset, ewc=ewc, std=std, task=task)
         self.compute_Z(S, Y, ewc)  # computes Z for S-LSR1; X, A for S-LBFGS
         logger.info("Finished training!")
+        if self.normalize_ewc:
+            gamma = sum([torch.dot(S[:,i], Y[:,i]) / torch.dot(Y[:,i], Y[:,i]) for i in range(self.M)]) / self.M
+            gamma = 1.0 / gamma
+            logger.debug('Gamma = %s' % str(gamma))
+            ewc =  gamma * torch.ones_like(ewc)
         self.init = ewc.cpu() + self.init if hasattr(self, 'init') else ewc  # initial Hessian estimate, i.e. B0
         logger.debug("Norm of init = %.4f" % (torch.norm(self.init)))
         self.x_old = self.to_vec({n: copy.deepcopy(p.detach()) for n, p in net_.named_parameters() if self.is_shared(n)})

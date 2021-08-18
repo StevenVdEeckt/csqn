@@ -2,6 +2,7 @@
 import torch
 import argparse
 import csqn
+import csqn_inv
 import baselines
 import model
 from train_functions import *
@@ -37,10 +38,11 @@ parser.add_argument('--angle', type=int, default=5,
                     help='Angle of the rotation. Only used when Rotated MNIST experiments are selected')
 parser.add_argument('--log_file', type=str, default='log',
                     help='Name of the log file - default is just log. If T, results are written to Terminal')
-parser.add_argument('--p_hyp', type=float, default=0.8, help='p parameter in methodology of De Lange et al'
+parser.add_argument('--p_hyp', type=float, default=0.9, help='p parameter in methodology of De Lange et al'
                                                              'for choosing hyper-parameters.')
 parser.add_argument('--a_hyp', type=float, default=0.5, help='alpha parameter in methodology of De Lange et al'
                                                              'for choosing hyper-parameters.')
+parser.add_argument('--init_weight', type=float, default=-1, help='Initial weight for hyper-parameter search')
 args = parser.parse_args()
 
 """ Logging """
@@ -58,7 +60,7 @@ logging.info("Set the device: %s", str(device))
 p_hyp = args.p_hyp  # method must at least reach p*ACC_FT on new task
 a_hyp = args.a_hyp  # decaying factor
 logger.debug("Methodology of (De Lange et al., 2019) with p = %s, alpha = %s" % (str(p_hyp), str(a_hyp)))
-init_alpha = {'EWC': 1e8, 'CSQN': 1e6, 'MAS': 1e5, 'LWF': 1e2}  # initial weight for corresponding methods
+init_alpha = {'EWC': 1e8, 'KF': 1e6, 'CSQN': 1e6, 'MAS': 1e5 / 1024, 'LWF': 1e2 / 128}  # initial weight for corresponding methods
 
 """ Number of runs """
 start_id, iterations = args.start, args.iter
@@ -67,35 +69,41 @@ start_id, iterations = args.start, args.iter
 if args.experiments == 0:
     n_tasks, offset, batch_size, n_epoch = args.tasks, args.angle, 64, 10
     train_data, dev_data, test_data = get_rotated_mnist_data(n_tasks=n_tasks, angle=offset, batch_size=batch_size)
-    train_data1, _, _ = get_rotated_mnist_data(n_tasks=n_tasks, angle=offset, batch_size=1)  # for OGD
-    get_net = lambda: model.get_net('mlp', 10)
+    train_data1, _, _ = get_rotated_mnist_data(n_tasks=n_tasks, angle=offset,
+                                               batch_size=1 if args.method == 'OGD' else 16)  # for OGD or KF
+    get_net = lambda: model.get_net('mlp', 10, bias=args.method not in ['GPM', 'KF'])
     shared_layers = None
     first_task = 'task1_rotmnist_mlp'  # to load state_dict of model trained on first task
+    if args.method in ['GPM', 'KF']:
+        first_task += '_no_bias'
     res_name = 'rotated_mnist_results_%d_%d_lange' % (offset, n_tasks)  # results are stored in a dictionary
     init(train_data, dev_data, test_data, res_name, n_tasks, n_epoch)  # initialize train_functions.py
     n_classes = None
-    sample_data = train_data
+    sample_data, sample_data1 = train_data, train_data1
     first_epoch = n_epoch
 elif args.experiments == 1:
     n_tasks, batch_size, n_epoch = 11, 64, 10
     train_data, dev_data, test_data, n_classes = get_split_cifar10_100_data(n_tasks=n_tasks-1, batch_size=batch_size)
-    train_data1, _, _, _ = get_split_cifar10_100_data(n_tasks=n_tasks-1, batch_size=1)
+    train_data1, _, _, _ = get_split_cifar10_100_data(n_tasks=n_tasks-1, batch_size=1 if args.method == 'OGD' else 16)
     _, shared_layers = model.get_net('resnet', [n_classes] * (n_tasks + 1), return_shared_layers=True)
     get_net = lambda: model.get_net('resnet', [n_classes] * (n_tasks + 1))
     res_name = 'cifar10100_resnet_results'  # to load state_dict of model trained on first task
     first_task = 'task1_resnet_cifar10'  # results are stored in a dictionary
     init(train_data, dev_data, test_data, res_name, n_tasks, n_epoch, n_classes, shared_layers)
-    sample_data = train_data
+    sample_data, sample_data1 = train_data, train_data1
     first_epoch = 15
 elif args.experiments == 2:
     batch_size, n_epoch, n_tasks = 128, 50, 5
     n_classes = 10
     train_data, dev_data, test_data, sample_data = get_five_datasets(batch_size=batch_size)
-    train_data1, _, _, _ = get_five_datasets(batch_size=1)
-    get_net = lambda: model.get_net('lenet', [n_classes] * n_tasks)
-    _, shared_layers = model.get_net('lenet', [n_classes] * n_tasks, return_shared_layers=True)
+    train_data1, _, _, sample_data1 = get_five_datasets(batch_size=1 if args.method == 'OGD' else 16)
+    get_net = lambda: model.get_net('lenet', [n_classes] * n_tasks, bias=args.method not in ['GPM'])
+    _, shared_layers = model.get_net('lenet', [n_classes] * n_tasks, return_shared_layers=True,
+                                     bias=args.method not in ['GPM', 'KF'])
     res_name = 'five_dataset_results'  # to load state_dict of model trained on first task
     first_task = 'first_task_resnet_five'  # results are stored in a dictionary
+    if args.method in ['GPM', 'KF']:
+        first_task += '_no_bias'
     init(train_data, dev_data, test_data, res_name, n_tasks, n_epoch, n_classes, shared_layers)
     first_epoch = n_epoch
 else:
@@ -121,12 +129,12 @@ except Exception as e:  # at this point we assume it did not exist, so we train 
 
 
 """ Determining the method.. """
-if 'CSQN' in args.method:
-    method = 'CSQN'
+if 'CSQN' in args.method or 'CiSQN' in args.method:
+    method = 'CSQN' if 'CSQN' in args.method else 'CiSQN'
     qnm = 'BFGS' if args.method.split(' ')[0].split('-')[-1] == 'B' else 'SR1'
     M = int(args.method.split(' ')[1].strip('(').strip(')'))
     if len(args.method.split(' ')) > 2:
-        red = {'EV': 'auto', '2N': 'tree', 'CT': 'm', 'SPL': 'split'}
+        red = {'EV': 'auto', '2N': 'tree', 'CT': 'm', 'SPL': 'split', 'W': 'weight', '10': 'ten'}
         reduction = red[args.method.split(' ')[-1]]
     else:
         reduction = 'none'
@@ -139,11 +147,13 @@ logger.debug('Running with CL method: %s' % method)
 
 
 """ To initialize the regulator """
-choose_regulator = {'EWC': baselines.EWC, 'MAS': baselines.MAS, 'OGD': baselines.OGD,
-                    'LWF': baselines.LWF, 'CSQN': csqn.CSQN}
+choose_regulator = {'EWC': baselines.EWC, 'MAS': baselines.MAS, 'OGD': baselines.OGD, 'KF': baselines.KF,
+                    'LWF': baselines.LWF, 'CSQN': csqn.CSQN, 'CiSQN': csqn_inv.CSQN_Inv}
 arguments = {'EWC': (shared_layers, n_classes), 'MAS': (shared_layers,), 'LWF': (),
              'OGD': (shared_layers, 200, n_classes),
-             'CSQN': (qnm, shared_layers, M, reduction, n_classes)}
+             'CSQN': (qnm, shared_layers, M, reduction, n_classes),
+             'CiSQN': (qnm, shared_layers, M, n_classes),
+             'KF': ()}
 
 
 logger.debug('Starting the experiments...')
@@ -178,10 +188,12 @@ for num in range(start_id, start_id + iterations):
             if shared_layers is not None:
                 logger.debug('Method = LWF, running training non-shared layers..')
                 train_net(net_, task + 1, epochs=n_epoch // 2, freeze_layers=shared_layers)
-        elif method == 'CSQN':
+        elif method in ['CSQN', 'CiSQN']:
             regulator.update(copy.deepcopy(net_), sample_data(task), task if shared_layers is not None else None)
+        elif method in ['KF']:
+            regulator.update_KF(copy.deepcopy(net_), sample_data1(task), task if shared_layers is not None else None)
 
-        if method not in ['OGD']:  # methods requiring hyper-parameter search satisfy this if-statement
+        if method not in ['OGD', 'CiSQN']:  # methods requiring hyper-parameter search satisfy this if-statement
 
             logging.debug("Adapting without regularization..")
             net_ft = copy.deepcopy(net_)
@@ -191,29 +203,35 @@ for num in range(start_id, start_id + iterations):
                 mod_list.append(net_ft.state_dict())
                 continue
 
-            acc, alpha = 0, init_alpha[method]
+            acc, alpha = 0, init_alpha[method] if args.init_weight <= 0 else args.init_weight
 
             while acc < p_hyp * acc_ft:
+                net_hyp = copy.deepcopy(net_)
+                names, accs = [('Task %d' % i) for i in range(task + 1)], [
+                    round(test(net_hyp, i, 'dev', print_result=False), 2)
+                    for i in range(task + 1)]
+                logger.info('Initial model: ' + str(names) + " = " + str(accs))
                 logger.info('[Learning task %d with alpha = %s]' % (task, str(alpha)))
-                if method in ['EWC', 'MAS', 'CSQN']:
-                    train_net(net_, task + 1, reg_loss=lambda x: regulator.regularize(x, alpha), epochs=n_epoch)
+                if method in ['EWC', 'MAS', 'CSQN', 'KF']:
+                    train_net(net_hyp, task + 1, reg_loss=lambda x: regulator.regularize(x, alpha), epochs=n_epoch)
                 else:  # at this point the only option is method == LWF
                     if shared_layers is None:
-                        train_net(net_, task + 1,
+                        train_net(net_hyp, task + 1,
                                   reg_loss=lambda x, y: regulator.regularize(x, y, alpha), epochs=n_epoch)
                     else:
-                        train_net(net_, task + 1,
+                        train_net(net_hyp, task + 1,
                                   reg_loss=lambda x, y, t: regulator.regularize(x, y, alpha, t), epochs=n_epoch)
-                acc = test(net_, task + 1, 'dev')
+                acc = test(net_hyp, task + 1, 'dev')
                 logger.info("[Task %d] = [%.2f]" % (task + 1, acc))
                 alpha = a_hyp * alpha
 
             best_alpha = alpha / a_hyp
             logger.info("Finished! Best alpha = %s - with accuracy of %.2f" % (str(best_alpha), acc))
-            mod_list.append(net_.state_dict())
+            mod_list.append(net_hyp.state_dict())
         else:  # for methods not requiring hyper-parameter search
-            train_net(net_, task + 1, grad_fn=lambda x: regulator.regularize(x), epochs=n_epoch, opt='sgd')
-            mod_list.append(net_.state_dict())
+            net_hyp = copy.deepcopy(net_)
+            train_net(net_hyp, task + 1, grad_fn=lambda x: regulator.regularize(x), epochs=n_epoch, opt='sgd')
+            mod_list.append(net_hyp.state_dict())
 
     logger.info("## 3.3 Evaluation")
     net_list = []
@@ -224,4 +242,4 @@ for num in range(start_id, start_id + iterations):
     if method == 'Fine-Tuning':
         test_and_update(net_list, method)
         break
-    test_and_update(net_list, method + ' %d' % num)
+    test_and_update(net_list, args.method + ' %d' % num)

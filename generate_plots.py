@@ -25,10 +25,16 @@ parser.add_argument('results', type=str, help='Name of the file of the results d
 parser.add_argument('name', type=str, help='Name of the experiments, e.g. Split CIFAR-100 experiments')
 parser.add_argument('--no_plot', type=str, default='Scratch T1,Scratch T1 + Freeze & Adapt',
                     help='Names of methods that must not be included in the plot or tables, separated by a comma')
-parser.add_argument('--rename', type=int, default=1, help='Set to 1 if methods must be re-named first')
+parser.add_argument('--fine_tuning', type=str, default='Fine-Tuning',
+                    help='Name of Fine-Tuning method - to compute Forward Transfer.')
+parser.add_argument('--rename', type=int, default=0, help='Set to 1 if methods must be re-named first')
 parser.add_argument('--map', type=str, default='plots/', help='Map in which to store the plots')
+parser.add_argument('--official', type=int, default=0,
+                    help="If 1, only predefined methods are displayed in the figures with the predefined colours")
 
 args = parser.parse_args()
+
+
 
 
 """ Important parameters """
@@ -39,6 +45,17 @@ file_prefix = args.name.lower().replace('-', '').replace(' ', '').replace('/', '
 if not os.path.isdir(args.map):
     os.mkdir(args.map)
 
+
+""" Colors and linestyles for each methods """
+colors = {'CSQN-S (20)': 'cyan', 'CSQN-S (10)': 'darkturquoise',
+          'CSQN-B (20)': 'deepskyblue', 'CSQN-B (10)': 'dodgerblue',
+          'LWF': 'red', 'MAS': 'green','EWC': 'olive', 'KF': 'orange', 'Fine-Tuning': 'grey'}
+#linestyle = {'CSQN-S (20)': 'dashdot', 'CSQN-S (10)': 'dash',
+#          'CSQN-B (20)': 'dashdot', 'CSQN-B (10)': 'dash',
+#          'LWF': 'dotted', 'MAS': 'dotted','EWC': 'dotted', 'KF': 'dotted', 'Fine-Tuning': 'solid'}
+marker = {'CSQN-S (20)': 'v', 'CSQN-S (10)': '^',
+          'CSQN-B (20)': '<', 'CSQN-B (10)': '>',
+          'LWF': 'D', 'MAS': 's','EWC': '8', 'KF': 'P', 'Fine-Tuning': 'X'}
 
 """
   Returns true if given name is our method
@@ -68,7 +85,7 @@ def re_name(org_name):
   :param dict results: the results dictionary
 """
 def re_group(results_):
-    order = ['Fine-Tuning', 'EWC', 'MAS', 'OGD', 'LWF', 'CSQN-S (10)', 'CSQN-S (20)', 'CSQN-B (10)', 'CSQN-B (20)']
+    order = ['Fine-Tuning', 'EWC', 'MAS', 'OGD', 'LWF', 'KF', 'CSQN-S (10)', 'CSQN-S (20)', 'CSQN-B (10)', 'CSQN-B (20)']
     new_results = {}
     for method in order:
         if method not in results_.keys():
@@ -125,22 +142,31 @@ def get_counts(results_):
 """
   Returns the accuracy and backward transfer for the given method
   :param torch.tensor R: T*T tensor with T the number of tasks and R[i,j] the accuracy on task j after learning task i
+  :param torch.tensor RFT: (optional) same as R, but for Fine-Tuning. If not provided, FWT is not computed.
 """
-def compute_acc_bwt(R):
+def compute_acc_bwt(R, RFT=None):
     acc = R[-1, :].sum().item() / R.size(0)
     bwt = sum([(R[-1, i] - R[i, i]).item() for i in range(R.size(0))]) / (R.size(0) - 1)
+    if RFT is not None:
+        fwt = sum([R[i, i] - RFT[i,i] for i in range(R.size(0))]) / (R.size(0) - 1)
+        return acc,  bwt, fwt
     return acc, bwt
 
 
 """
   Returns a summary of the results dictionary, with for each method the accuracy and backward transfer
   :param dict results: the results dictionary
+  :param str fine_tuning: (optional) name of Fine-Tuning, if not provided, FWT is not computed
 """
-def get_summary(results_):
+def get_summary(results_, fine_tuning=None):
     summary = {}
     for n, p in results_.items():
-        acc, bwt = compute_acc_bwt(p['R'])
-        summary[n] = [acc, bwt]
+        if fine_tuning:
+            acc, bwt, fwt = compute_acc_bwt(p['R'], results_[fine_tuning]['R'])
+            summary[n] = [acc, bwt, fwt]
+        else:
+            acc, bwt = compute_acc_bwt(p['R'])
+            summary[n] = [acc, bwt]
     return summary
 
 
@@ -156,11 +182,13 @@ def compute_accuracy_over_time(results):
 
 
 """
-  Loading the files
+  Loading the files, preparing Fine-Tuning for FWT, computing the Summary
 """
 results = torch.load(res_file)
 aggr_results = get_aggregate_results(results, args.rename == 1)
-summary = get_summary(aggr_results)
+fine_tuning = args.fine_tuning if args.fine_tuning in aggr_results.keys() else None
+summary = get_summary(aggr_results, fine_tuning=fine_tuning)
+
 
 
 """ 
@@ -184,10 +212,16 @@ def make_plot(results, name, title, xlabel, ylabel):
     kBASE, k = 0, 0
     for n, p in results.items():
         if is_our_method(n):
-            plt.plot(np.arange(len(p)) + 1, p, label=n, color=cm(k / COLORS))
+            if args.official:
+                plt.plot(np.arange(len(p)) + 1, p, label=n, color=colors[n], marker=marker[n], linewidth=1)
+            else:
+                plt.plot(np.arange(len(p)) + 1, p, label=n, color=cm(k / COLORS))
             k += 1
         else:
-            plt.plot(np.arange(len(p)) + 1, p, label=n, color=cm_base(kBASE / COLORS_BASE))
+            if args.official:
+                plt.plot(np.arange(len(p)) + 1, p, label=n, color=colors[n], marker=marker[n],linewidth=1)
+            else:
+                plt.plot(np.arange(len(p)) + 1, p, label=n, color=cm_base(kBASE / COLORS_BASE))
             kBASE += 1
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -204,7 +238,7 @@ def make_plot(results, name, title, xlabel, ylabel):
 """
 logger.info("Generating accuracy plot..")
 make_plot(compute_accuracy_over_time(aggr_results), name=args.map + file_prefix + "avg.png",
-          title="title", xlabel="Task", ylabel="Average accuracy")
+          title="", xlabel="Task", ylabel="Average accuracy")
 logger.info("Finished!")
 
 
@@ -254,19 +288,32 @@ make_bar_plot({n: p[1] for n, p in summary.items()}, name=args.map + file_prefix
               title=title, xlabel=[], ylabel="Backward Transfer")
 logger.info("Finished!")
 
+"""
+  Makes a bar plot for the forward transfer, if applicable
+"""
+if fine_tuning:
+    logger.info("Generating forward transfer bar plot..")
+    make_bar_plot({n: p[2] for n, p in summary.items()}, name=args.map + file_prefix + "fwtbarplot.png",
+                  title=title, xlabel=[], ylabel="Forward Transfer")
+    logger.info("Finished!")
+
 
 """
   Print LaTeX code for Table
   :param dict results: the results dictionary
+  :param bool fwt: (optional) set to True if forward transfer must be printed 
 """
-def print_latex_code_table(results):
+def print_latex_code_table(results, fwt=False):
     print("\\midrule")
     line = False
     for n, p in results.items():
         if is_our_method(n) and not line:
             print("\midrule")
             line = True
-        print("%s & %.2f & %.2f %s" % (n, p[0], p[1], r"\\"))
+        if fwt:
+            print("%s & %.2f & %.2f & %.2f %s" % (n, p[0], p[1], p[2], r"\\"))
+        else:
+            print("%s & %.2f & %.2f %s" % (n, p[0], p[1], r"\\"))
     print("\\bottomrule")
 
 
@@ -274,5 +321,5 @@ def print_latex_code_table(results):
   Print the LaTeX code for the Table
 """
 logger.info("Generating LaTeX code..")
-print_latex_code_table(summary)
+print_latex_code_table(summary, bool(fine_tuning))
 logger.info("Finished!")

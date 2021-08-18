@@ -225,7 +225,7 @@ def train_net(net_, task, reg_loss=None, grad_fn=None, lay_grad_fn=None, epochs=
                 try:
                     loss += reg_loss(net_)
                 except:
-                    loss += reg_loss(net_, inputs) if n_classes is None else reg_loss(net_, inputs, task)
+                    loss += reg_loss(net_, inputs)
             loss.backward()
             if grad_fn is not None:
                 update_gradients(net_, grad_fn)

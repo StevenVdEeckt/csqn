@@ -13,7 +13,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
        -- Memory-Aware Synapses (MAS) (Aljundi et al., 2018)
        -- Learning Without Forgetting (LWF) (Li et al., 2017)
        -- Orthogonal Gradient Descent (OGD) (Farajtabar et al., 2019)
-       -- Gradient Projection Memory (GPM) (Saha et al., 2021) 
+       -- Kronecker-Factored Laplace Approximation (KF) (Ritter et al., 2018) 
        
     References:
     James Kirkpatrick, Razvan Pascanu, Neil Rabinowitz, Joel Veness, Guillaume Desjardins, Andrei A. Rusu, Kieran Milan, 
@@ -24,7 +24,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     Zhizhong Li and Derek Hoiem. Learning without forgetting, 2017
     Mehrdad Farajtabar, Navid Azizan, Alex Mott, and Ang Li. Orthogonal gradient descent for
         continual learning, 2019.
-    Gobinda Saha, Isha Garg, and Kaushik Roy. Gradient projection memory for continual learning, 2021.
+    Hippolyt Ritter, Aleksandar Botev, and David Barber. 2018. Online structured Laplace Approximations for Overcoming 
+        Catastrophic Forgetting. In Proceedings of the 32nd International Conference on Neural Information Processing 
+        Systems (NIPS'18). Curran Associates Inc., Red Hook, NY, USA, 3742-3752.
 """
 
 logger = logging.getLogger('main')
@@ -276,132 +278,25 @@ class OGD:
         return self.gram_schmidt(grad, self.S)
 
 
+def cuda_overview():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        t = torch.cuda.get_device_properties(0).total_memory * 10.0 ** (-9)
+        r = torch.cuda.memory_reserved(0) * 10.0 ** (-9)
+        a = torch.cuda.memory_allocated(0) * 10.0 ** (-9)
+        f = r - a  # free inside reserved
+        logger.debug("CUDA memory - total: %.4f; reserved: %.4f; allocated: %.4f; available: %.4f" % (t, r, a, f))
+    else:
+        pass
+
 """
-    Gradient Projection Memory (Saha et al., 2021) 
-    - implementation adapted from 'https://github.com/sahagobinda/GPM'
-    :param np.array threshold: threshold per layer 
-    :param int n_samples: number of samples to take for each task and layer
+    Kronecker-factored Laplace Approximations (Ritter et al., 2018)
 """
-class GPM:
-    def __init__(self, threshold=np.array([0.95, 0.99, 0.99]), n_samples=300):
-        self.threshold = threshold
-        self.n_samples = n_samples
-
-    """
-        Computes the representation matrix
-        :param nn.Module net: the neural network
-        :param torch.Dataloader dataloader: the training data to take samples from
-    """
-    def get_representation_matrix(self, net, dataloader):
-        # Collect activations by forward pass
-        r = np.arange(len(dataloader))
-        np.random.shuffle(r)
-        r = r[0:self.n_samples]
-        b = torch.tensor([])
-        for i, data in enumerate(dataloader):
-            x, y = data
-            if i in r:
-                b = torch.cat((b, x.view(-1, 28 * 28)), dim=0)
-        example_data = b.to(device)
-        _ = net(example_data)
-
-        batch_list = [self.n_samples, self.n_samples, self.n_samples]
-        mat_list = []  # list contains representation matrix of each layer
-        act_key = list(net.act.keys())
-
-        for i in range(len(act_key)):
-            bsz = batch_list[i]
-            act = net.act[act_key[i]].detach().cpu().numpy()
-            activation = act[0:bsz].transpose()
-            mat_list.append(activation)
-        return mat_list
-
-    """
-        Updates the GPM
-        :param list mat_list: representation matrix as a list of np.arrays
-        :param feature_list: (optional) GPM from previous tasks (if applicable)
-    """
-    def update_GPM(self, mat_list, feature_list=None):
-        if feature_list is None:
-            # After First Task
-            feature_list = []
-            for i in range(len(mat_list)):
-                activation = mat_list[i]
-                U, S, Vh = np.linalg.svd(activation, full_matrices=False)
-                # criteria (Eq-5)
-                sval_total = (S ** 2).sum()
-                sval_ratio = (S ** 2) / sval_total
-                r = np.sum(np.cumsum(sval_ratio) < self.threshold[i])  # +1
-                feature_list.append(U[:, 0:r])
-        else:
-            for i in range(len(mat_list)):
-                activation = mat_list[i]
-                U1, S1, Vh1 = np.linalg.svd(activation, full_matrices=False)
-                sval_total = (S1 ** 2).sum()
-                # Projected Representation (Eq-8)
-                act_hat = activation - np.dot(np.dot(feature_list[i], feature_list[i].transpose()), activation)
-                U, S, Vh = np.linalg.svd(act_hat, full_matrices=False)
-                # criteria (Eq-9)
-                sval_hat = (S ** 2).sum()
-                sval_ratio = (S ** 2) / sval_total
-                accumulated_sval = (sval_total - sval_hat) / sval_total
-
-                r = 0
-                for ii in range(sval_ratio.shape[0]):
-                    if accumulated_sval < self.threshold[i]:
-                        accumulated_sval += sval_ratio[ii]
-                        r += 1
-                    else:
-                        break
-                if r == 0:
-                    print ('Skip Updating GPM for layer: {}'.format(i + 1))
-                    continue
-                # update GPM
-                Ui = np.hstack((feature_list[i], U[:, 0:r]))
-                if Ui.shape[1] > Ui.shape[0]:
-                    feature_list[i] = Ui[:, 0:Ui.shape[0]]
-                else:
-                    feature_list[i] = Ui
-        return feature_list
-
-    """
-        Computes the feature matrix, used for the regularization
-        :param nn.Module model: the neural network
-        :param list feature_list: representing the GPM
-    """
-    @staticmethod
-    def get_feature_mat(model, feature_list):
-        feature_mat = []
-        for i in range(len(model.act)):
-            Uf = torch.Tensor(np.dot(feature_list[i], feature_list[i].transpose())).to(device)
-            feature_mat.append(Uf)
-        return feature_mat
-
-    """
-        Updates the GPM object after a task is learn
-        :param nn.Module model: the neural network in question
-        :param torch.Dataloader dataloader: the training data for the task
-    """
-    def update(self, model, dataloader):
-        mat_list = self.get_representation_matrix(model, dataloader)
-        self.feature_list = self.update_GPM(mat_list, self.feature_list if hasattr(self, 'feature_list') else None)
-        logger.debug('Feature list has %s elements' % str(sum([torch.tensor(x).numel() for x in self.feature_list])))
-        self.feature_mat = self.get_feature_mat(model, self.feature_list)
-        logger.debug('Feature mat has %s elements' % str(sum([torch.tensor(x).numel() for x in self.feature_mat])))
-
-    """
-        Applies GPM to the gradient, to prevent catastrophic forgetting
-        :param torch.tensor grad: gradient of a layer of the neural network
-        :param int k: to indicate to which layer the gradient belongs
-    """
-    def regularize(self, grad, k):
-        return grad - torch.matmul(grad, self.feature_mat[k]).view(grad.size())
-
-
-class KF_EWC:
+class KF:
     def __init__(self):
         self.Q = {}
         self.H = {}
+        self.task = -1
 
     """
         Transform dictionary of tensors into 1D tensor
@@ -411,71 +306,133 @@ class KF_EWC:
     def to_vec(param):
         return torch.cat([p.view(-1) for n, p in param.items()])
 
-    def update_KF(self, net_, dataloader):
+    """
+        Update Q and H matrices - called when consolidating knowledge from a new task
+        :param nn.Module net_: the neural network
+        :param torch.Dataloader dataloader: dataloader when representative data of current task
+        :param int task: (optional) should be provided in case of multi-head classification
+    """
+    def update_KF(self, net_, dataloader, task=None):
+        logger.debug('Updating KF...')
         net_ = net_.to(device)
         criterion = nn.CrossEntropyLoss()
+        Q, H, k = {}, {}, 0
         for i, data in enumerate(dataloader, 0):
             net_.zero_grad()
             # get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
-            outputs = net_(inputs.to(device))
+            outputs = net_(inputs.to(device), task) if task is not None else net_(inputs.to(device))
             loss = criterion(outputs, labels.to(device))
-            self.compute_HQ(net_, loss)
-        self.old_net = {n: copy.deepcopy(p.detach()) for n, p in net_.named_parameters() if self.is_shared(n)}
+            Q, H = self.compute_HQ(net_, loss, Q, H)
+            torch.cuda.empty_cache()
+            k += 1
+        self.task += 1
+        self.Q[self.task], self.H[self.task] = {n: p / k for n, p in Q.items()}, {n: p / k for n, p in H.items()}
+        self.old_net = {n: copy.deepcopy(p.detach()) for n, p in net_.named_parameters()}
+        net_.cpu()
 
-    def compute_HQ(self, net_, loss):
+    """
+        Help function to update Q and H in self.update_KF
+        :param nn.Module net_: the neural network
+        :param torch.tensor loss: the loss as computed on the current mini-batch
+        :param dict Q: dictionary with the Q matrices
+        :param dict H: dictionary with the H matrices
+    """
+    def compute_HQ(self, net_, loss, Q, H):
         for layer in net_.layers_in_reverse_order:
-            N = net_.state_dict()[layer + ".weight"].size(0)
-            logger.debug('N for layer %s = %d' % (str(layer), N))
-            hess = torch.autograd.functional.hessian(loss, net_.kf['pre-activation'][layer], create_graph=True)
-            hess = torch.sum(hess[0], dim=0)
-            H_old = 1.0 * H_new
-            prev_layer = layer
-
-    def compute_HQold(self, net_, loss):
-        for layer in net_.layers_in_reverse_order:
-            N = net_.state_dict()[layer + ".weight"].size(0)
-            logger.debug('N for layer %s = %d' % (str(layer), N))
-            hess = torch.autograd.functional.hessian(loss, net_.kf['pre-activation'][layer], create_graph=True)
-            if H_old is None:
-                hess = torch.autograd.functional.hessian(loss, net_.kf['pre-activation'][layer],
-                                                         create_graph=True, allow_unused=True)
-                logger.debug('Hess for layer %s: %s' % (str(layer), str(hess)))
-                H_new = torch.zeros([N, N], device=device)
-                for i in range(N):
-                    H_new[i,i] = hess[i]
+            if 'conv' in layer:
+                q, h = self.compute_HQ_conv(net_, layer, loss)
+            elif 'bn' in layer:
+                #q, h = self.compute_HQ_bn(net_, layer, loss)
+                continue
             else:
-                dfdh = torch.autograd.grad(net_.kf['post-activation'][layer].sum(), net_.kf['pre-activation'][layer],
-                                           create_graph=True, retain_graph=True, allow_unused=True)
-                logger.debug('dfdh for layer %s: %s' % (str(layer), str(dfdh)))
-                hess = torch.autograd.grad(dfdh.sum(), net_.kf['pre-activation'][layer],
-                                           create_graph=True, retain_graph=True, allow_unused=True)
-                logger.debug('Hess for layer %s: %s' % (str(layer), str(hess)))
-                derror = torch.autograd.grad(loss, net_.kf['post-activation'][layer],
-                                             create_graph=True, retain_graph=True, allow_unused=True)
-                logger.debug('derror for layer %s: %s' % (str(layer), str(derror)))
-                B, D = torch.zeros([N, N], device=device), torch.zeros([N, N], device=device)
-                for i in range(N):
-                    B[i,i] = dfdh[i]
-                    D[i,i] = hess[i] * derror[i]
-                H_new = torch.matmul(B, torch.matmul(torch.transpose(net_.state_dict()[layer]), 0, 1),
-                                     torch.matmul(H_old, torch.matmul(net_.state_dict()[layer], B))) + D
-            Q = torch.matmul(net_.kf['input'][layer].view(-1, 1), net_.kf['input'][layer].view(1, -1))
+                q, h = self.compute_HQ_lin(net_, layer, loss)
             try:
-                self.H[layer] += H_new
-                self.Q[layer] += Q
+                Q[layer], H[layer] = Q[layer] + q.detach(), H[layer] + h.detach()
             except Exception as e:
-                logger.warning('Exception when adding Q, H: %s' % str(e))
-                self.H[layer] = H_new
-                self.Q[layer] = Q
-            H_old = 1.0 * H_new
-            prev_layer = layer
+                logger.debug('Exception: %s' % e)
+                Q[layer], H[layer] = q.detach(), h.detach()
+        return Q, H
 
+    """
+        Help function to compute Q and H for a FC layer
+        :param nn.Module net_: the neural network
+        :param str layer: name or identifier of layer
+        :param torch.tensor loss: the loss on the current mini-batch
+    """
+    def compute_HQ_lin(self, net_, layer, loss):
+        logger.debug("Size of %s = %s" % (layer, str(net_.kf['input'][layer].size())))
+        OUT, IN = net_.kf['input'][layer].size()
+        A = torch.cat((net_.kf['input'][layer].detach(), torch.ones([OUT], device=device).view(OUT, 1)), dim=1)
+        #A = net_.kf['input'][layer]
+        Q = (1 / A.size(0)) * torch.matmul(torch.transpose(A, 0, 1), A)
+        g = torch.autograd.grad(loss, net_.kf['pre-activation'][layer], create_graph=True)[0].detach()
+        H = (1 / g.size(0)) * torch.matmul(torch.transpose(g, 0, 1), g)
+        return Q.detach(), H.detach()
+
+    """
+        Help function to compute Q and H for a Convolutional layer
+        :param nn.Module net_: the neural network
+        :param str layer: name or identifier of layer
+        :param torch.tensor loss: the loss on the current mini-batch
+    """
+    def compute_HQ_conv(self, net_, layer, loss):
+        I, J, D, D = net_.state_dict()[layer].size()
+        M, _, T, _ = net_.kf['input'][layer].size()
+        _, _, Tn, _ = net_.kf['pre-activation'][layer].size()
+        exp_A = self.expansion_operator(net_.kf['input'][layer].detach(), M, J, T, D)
+        exp_A = torch.cat((exp_A, torch.ones([M * T * T]).view(-1, 1)), dim=1)
+        Q = 1.0 / M * torch.matmul(torch.transpose(exp_A, 0, 1), exp_A).to(device)
+        dS = torch.autograd.grad(loss, net_.kf['pre-activation'][layer], create_graph=True)[0].detach()
+        S = torch.transpose(dS, 0, 1).reshape(I, M * Tn * Tn)
+        H = 1 / (Tn * Tn * M) * torch.matmul(S, torch.transpose(S, 0, 1))
+        return Q.detach(), H.detach()
+
+    """
+        The expansion operator as explained by (Gross and Martens, 2016)
+        
+        References:
+        R. Grosse and J. Martens. A Kronecker-factored Approximate Fisher Matrix for Convolution Layers. 
+              In International Conference on Machine Learning, pages 573-582, 2016.
+    """
+    @staticmethod
+    def expansion_operator(A, M, J, T, D):
+        d = D // 2
+        B = F.pad(A, (d, d, d, d))
+        C = torch.zeros([M * T * T, J * D * D])
+        for m in range(M):
+            for j in range(J):
+                for t1 in range(T):
+                    for t2 in range(T):
+                        t = t1 * T + t2
+                        C[t * M + m, j * D * D:(j + 1) * D * D] = B[m, j, t1: t1 + d + d + 1,
+                                                                  t2: t2 + d + d + 1].reshape(-1)
+        return C
+
+    """
+        To regularize the training of the network
+        :param nn.Module current_net: the current neural network 
+        :param float alpha: the weight of the regularization
+    """
     def regularize(self, current_net, alpha):
-        y, x = torch.tensor([], device=device), torch.tensor([], device=device)
+        loss = 0
         for n, p in current_net.named_parameters():
-            layer = n.split('.')[0]
-            y = torch.cat((y, p.view(-1)))  # gather the (shared) parameters in a vector
-            HWQ = torch.matmul(self.H[layer], torch.matmul(torch.transpose(p - self.old_net[n], 0, 1), self.Q[layer]))
-            x = torch.cat((x, HWQ.view(-1)))
-        return alpha / 2 * torch.dot(y, x)
+            if n in current_net.layers_in_reverse_order:
+                if 'conv' in n:
+                    I, J, D, _ = p.size()
+                    param, old_param = p.view(I, J * D * D), self.old_net[n].reshape(I, J * D * D)
+                else:
+                    param, old_param = 1.0 * p, self.old_net[n]
+                layer_name = n.split('.')[0]
+                for nb, pb in current_net.named_parameters():
+                    if nb == layer_name + ".bias":
+                        param, old_param = torch.cat((param, pb.view(-1, 1)), dim=1), \
+                                           torch.cat((old_param, self.old_net[layer_name + ".bias"].view(-1, 1)), dim=1)
+                        break
+                for task in range(self.task + 1):
+                    logger.debug("Size of: H = %s, param = %s, old_param = %s, Q = %s" %
+                                 (str(self.H[task][n].size()), str(param.size()), str(old_param.size()),
+                                  str(self.Q[task][n].size())))
+                    HWQ = torch.matmul(self.H[task][n], torch.matmul(param - old_param, self.Q[task][n]))
+                    loss += alpha / 2 * torch.dot((param - old_param).view(-1), HWQ.view(-1))
+        return loss

@@ -179,7 +179,7 @@ def get_split_cifar100_data(n_tasks, batch_size):
     :param int n_tasks: the number of tasks to create for the CIFAR-100 (total tasks is thus n_tasks + 1)
     :param int batch_size: the batch_size
 """
-def get_split_cifar10_100_data(n_tasks, batch_size):
+def get_split_cifar10_100_data(n_tasks, batch_size, n_samples=70):
     logger.debug("Split CIFAR-10/100 dataset with: n_tasks = %d, batch_size = %d" % (n_tasks+1, batch_size))
     n_classes = 100 // n_tasks
     classes_per_task = {i: [i * n_classes + j for j in range(n_classes)] for i in range(n_tasks)}
@@ -230,6 +230,10 @@ def get_split_cifar10_100_data(n_tasks, batch_size):
     trainset, devset = torch.utils.data.random_split(dataset, [45000, 5000],
                                                      generator=torch.Generator().manual_seed(42))
 
+    sampleset10 = torch.utils.data.Subset(trainset10,
+                            np.random.permutation(len(trainset10))[:n_samples * batch_size])
+
+
     train_data100 = lambda t_: torch.utils.data.DataLoader(trainset, batch_size=batch_size, num_workers=0,
                 sampler=torch.utils.data.sampler.SubsetRandomSampler(get_indices(trainset, classes_per_task[t_],
                                                                                  dataset)))
@@ -241,12 +245,14 @@ def get_split_cifar10_100_data(n_tasks, batch_size):
     train_data10 = torch.utils.data.DataLoader(trainset10, batch_size=batch_size, num_workers=0, shuffle=True)
     test_data10 = torch.utils.data.DataLoader(testset10, batch_size=batch_size, num_workers=0, shuffle=False)
     dev_data10 = torch.utils.data.DataLoader(devset10, batch_size=batch_size, num_workers=0, shuffle=False)
+    sample_data10 = torch.utils.data.DataLoader(sampleset10, batch_size=batch_size, num_workers=0, shuffle=True)
 
     train_data = lambda t_: train_data10 if t_ == 0 else train_data100(t_ - 1)
     dev_data = lambda t_: dev_data10 if t_ == 0 else dev_data100(t_ - 1)
     test_data = lambda t_: test_data10 if t_ == 0 else test_data100(t_ - 1)
+    sample_data = lambda t_: sample_data10 if t_ == 0 else train_data100(t_ - 1)
 
-    return train_data, dev_data, test_data, n_classes
+    return train_data, dev_data, test_data, sample_data, n_classes
 
 
 """
